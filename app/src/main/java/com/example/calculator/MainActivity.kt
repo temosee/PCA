@@ -29,7 +29,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -37,7 +36,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import java.util.UUID
+import com.example.calculator.model.Calculation
+import com.example.calculator.ui.state.InputState
+import com.example.calculator.viewmodel.SplitEvent
+import com.example.calculator.viewmodel.SplitViewModel
 
 @Composable
 fun CalculatorTheme(content: @Composable () -> Unit) {
@@ -49,47 +51,6 @@ fun CalculatorTheme(content: @Composable () -> Unit) {
         ),
         content = content
     )
-}
-
-data class Calculation(
-    val id: String = UUID.randomUUID().toString(),
-    val totalBill: Double,
-    val people: Int,
-    val tipPercent: Double = 15.0,
-    val timestamp: Long = System.currentTimeMillis()
-) {
-    val tipAmount: Double get() = totalBill * (tipPercent / 100)
-    val totalWithTip: Double get() = totalBill + tipAmount
-    val perPerson: Double get() = totalWithTip / people
-}
-
-class SplitViewModel : ViewModel() {
-    var billAmount by mutableStateOf("")
-    var numPeople by mutableStateOf("")
-    
-    private val _history = mutableStateListOf<Calculation>()
-    val history: List<Calculation> get() = _history.takeLast(5).reversed()
-
-    val isInputValid: Boolean
-        get() = (billAmount.toDoubleOrNull() ?: 0.0) > 0 && (numPeople.toIntOrNull() ?: 0) > 0
-
-    fun calculate(): String {
-        val calc = Calculation(
-            totalBill = billAmount.toDoubleOrNull() ?: 0.0,
-            people = numPeople.toIntOrNull() ?: 1
-        )
-        _history.add(calc)
-        return calc.id
-    }
-
-    fun getCalculation(id: String?): Calculation? {
-        return _history.find { it.id == id }
-    }
-
-    fun resetInputs() {
-        billAmount = ""
-        numPeople = ""
-    }
 }
 
 sealed class Screen(val route: String) {
@@ -133,9 +94,11 @@ fun SplitMateApp() {
                     }
                 },
                 actions = {
-                    if (currentRoute != Screen.History.route) {
-                        IconButton(onClick = { navController.navigate(Screen.History.route) }) {
-                            Icon(Icons.Default.History, contentDescription = "История")
+                    if (currentRoute == Screen.Home.route) {
+                        TextButton(onClick = { navController.navigate(Screen.History.route) }) {
+                            Icon(Icons.Default.History, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("История")
                         }
                     }
                 },
@@ -152,8 +115,11 @@ fun SplitMateApp() {
                 HomeScreen(onStart = { navController.navigate(Screen.Input.route) })
             }
             composable(Screen.Input.route) {
+                val state = viewModel.state
                 InputScreen(
-                    viewModel = viewModel,
+                    state = state,
+                    onBillChanged = { viewModel.onEvent(SplitEvent.BillChanged(it)) },
+                    onPeopleChanged = { viewModel.onEvent(SplitEvent.PeopleChanged(it)) },
                     onCalculate = {
                         val id = viewModel.calculate()
                         navController.navigate(Screen.Result.createRoute(id))
@@ -170,7 +136,7 @@ fun SplitMateApp() {
                     calculation = calculation,
                     onBackToEdit = { navController.popBackStack() },
                     onNewCalculation = {
-                        viewModel.resetInputs()
+                        viewModel.onEvent(SplitEvent.Reset)
                         navController.navigate(Screen.Input.route) {
                             popUpTo(Screen.Home.route) { inclusive = false }
                         }
@@ -230,7 +196,12 @@ fun HomeScreen(onStart: () -> Unit) {
 }
 
 @Composable
-fun InputScreen(viewModel: SplitViewModel, onCalculate: () -> Unit) {
+fun InputScreen(
+    state: InputState,
+    onBillChanged: (String) -> Unit,
+    onPeopleChanged: (String) -> Unit,
+    onCalculate: () -> Unit
+) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -244,8 +215,8 @@ fun InputScreen(viewModel: SplitViewModel, onCalculate: () -> Unit) {
         ) {
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 OutlinedTextField(
-                    value = viewModel.billAmount,
-                    onValueChange = { if (it.length <= 9) viewModel.billAmount = it },
+                    value = state.billAmount,
+                    onValueChange = onBillChanged,
                     label = { Text("Сумма чека") },
                     prefix = { Text("₽ ") },
                     leadingIcon = { Icon(Icons.Rounded.Payments, null, tint = MaterialTheme.colorScheme.primary) },
@@ -256,8 +227,8 @@ fun InputScreen(viewModel: SplitViewModel, onCalculate: () -> Unit) {
                 )
 
                 OutlinedTextField(
-                    value = viewModel.numPeople,
-                    onValueChange = { if (it.length <= 3) viewModel.numPeople = it },
+                    value = state.numPeople,
+                    onValueChange = onPeopleChanged,
                     label = { Text("Человек") },
                     leadingIcon = { Icon(Icons.Rounded.Groups, null, tint = MaterialTheme.colorScheme.primary) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -272,7 +243,7 @@ fun InputScreen(viewModel: SplitViewModel, onCalculate: () -> Unit) {
 
         Button(
             onClick = onCalculate,
-            enabled = viewModel.isInputValid,
+            enabled = state.isInputValid,
             modifier = Modifier.fillMaxWidth().height(60.dp),
             shape = RoundedCornerShape(20.dp)
         ) {
@@ -287,7 +258,20 @@ fun ResultScreen(
     onBackToEdit: () -> Unit,
     onNewCalculation: () -> Unit
 ) {
-    if (calculation == null) return
+    if (calculation == null) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("Расчет не найден", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(16.dp))
+            Button(onClick = onBackToEdit) {
+                Text("Вернуться назад")
+            }
+        }
+        return
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
